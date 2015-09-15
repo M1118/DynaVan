@@ -39,8 +39,8 @@ MDNSResponder mdns;
 ESP8266WebServer server(80);
  
 char apssid[]   = "Dynamometer";	// Access point SSID
-char ssid[]     = "MILLEND2";	        // your network SSID (name)
-char password[] = "Daniel12";	        // your network password
+char ssid[]     = "MySSID";	        // your network SSID (name)
+char password[] = "WiFiPasswd";	        // your network password
 
 static const int led    = 0;		// GPIO0 enables sensor LED
 static const int sensor = 2;		// GPIO2 is sensor feedback
