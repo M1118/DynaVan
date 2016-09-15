@@ -7,40 +7,45 @@
 #include <ESP8266WebServer.h>
 #include <Ticker.h>
 
+#define WHEEL_DIAMETER  12
+
+#define SCALE_MILE_MM  21120
+#define DISTANCE  ((PI * WHEEL_DIAMETER) / SCALE_MILE_MM)
+
 /*
- * Dynamometer Van WiFi Web Server
- *
- * Based on ESP8266 using an ESP-01 board
- *
- * Measure the speed and distance travelled by a 4mm scale
- * vehicle by means of an interrupter sensor on one of the axles
- * on the van.
- *
- * GPIO2 is the feedback from the sensor, 2 pulses are received
- * per rotation of the axle
- * GPIO0 is used to enable the sensor. Set low to enable the sensor
- * This allows the ESP8266 to boot normally regardless of the sensor
- * state.
- *
- * Implements a trip counter, where a trip is a single journey that
- * contains no stationary period of more than 60 seconds
- *
- * If using AP mode connect to http://192.168.4.1/ to see the data.
- * http://192.168.4.1/status will show network status information
- * http://192.168.4.1/connect?SSID=...&PWD=... to connect to a network
- */
- 
- #define DMAGIC1  0x34                // Magic numbers used to determine
- #define DMAGIC2  0xA1                // if the EEPROM can be trusted
- 
+   Dynamometer Van WiFi Web Server
+
+   Based on ESP8266 using an ESP-01 board
+
+   Measure the speed and distance travelled by a 4mm scale
+   vehicle by means of an interrupter sensor on one of the axles
+   on the van.
+
+   GPIO2 is the feedback from the sensor, 2 pulses are received
+   per rotation of the axle
+   GPIO0 is used to enable the sensor. Set low to enable the sensor
+   This allows the ESP8266 to boot normally regardless of the sensor
+   state.
+
+   Implements a trip counter, where a trip is a single journey that
+   contains no stationary period of more than 60 seconds
+
+   If using AP mode connect to http://192.168.4.1/ to see the data.
+   http://192.168.4.1/status will show network status information
+   http://192.168.4.1/connect?SSID=...&PWD=... to connect to a network
+*/
+
+#define DMAGIC1  0x34                // Magic numbers used to determine
+#define DMAGIC2  0xA1                // if the EEPROM can be trusted
+
 // multicast DNS responder
 MDNSResponder mdns;
 
 ESP8266WebServer server(80);
- 
+
 char apssid[]   = "Dynamometer";	// Access point SSID
-char ssid[]     = "MySSID";	        // your network SSID (name)
-char password[] = "WiFiPasswd";	        // your network password
+char ssid[]     = "MILLEND2";	        // your network SSID (name)
+char password[] = "Daniel12";	        // your network password
 
 static const int led    = 0;		// GPIO0 enables sensor LED
 static const int sensor = 2;		// GPIO2 is sensor feedback
@@ -83,28 +88,29 @@ extern void handle_connect();
 extern void handle_config();
 extern void handle_configure();
 extern void handle_wifi_connect();
+extern unsigned long micros();
 
 void setup()
 {
-  
+
   Serial.begin(115200);
-  
+
   EEPROM.begin(512);
 
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(apssid);
-  
+
   // Connect to WiFi network
   WiFi.begin(ssid, password);
 
   delay(1000);
 
-  
+
   if (!mdns.begin("dyna", WiFi.localIP()))
   {
     Serial.println("Failed to register hostname");
   }
-  
+
   server.on("/", handle_root);
   server.on("/norefresh", handle_norefresh);
   server.on("/status", handle_status);
@@ -117,17 +123,17 @@ void setup()
   server.on("/config", handle_config);
   server.on("/configure", handle_configure);
   server.on("/networks", handle_wifi_connect);
-  
+
   server.begin();
   Serial.println("HTTP server started");
-  
-    
+
+
   pinMode(led, OUTPUT);		// Enable sensor
   digitalWrite(led, 0);
   pinMode(sensor, INPUT);	// Set sensor pin as input and enable interrupt
   attachInterrupt(sensor, sense, FALLING);
   avgTick.attach(1, aver);	// Setup a 1 second recurring timer routine
-  
+
   if (EEPROM.read(0) == DMAGIC1 && EEPROM.read(1) == DMAGIC2)
   {
     refresh = EEPROM.read(3);
@@ -143,103 +149,109 @@ void loop()
     mph = 0;    // No sense for more than 1 second
     zeroms = millis();
   }
- 
+
   // Stationary for more than defined triplength seconds,
-  // set flag to start new trip 
+  // set flag to start new trip
   if (mph == 0 && millis() - zeroms > (triplength * 1000))
   {
     newtrip = 1;
   }
-  
+
   mdns.update();
-  
+
   server.handleClient();
 }
 
 
 /**
- * Interrupt routine called on every falling edge of the sensor.
- * This occurs twice per revolution of the wheel on the leading edge of
- * the interruptor pulse.
- */
+   Interrupt routine called on every falling edge of the sensor.
+   This occurs twice per revolution of the wheel on the leading edge of
+   the interruptor pulse.
+*/
 void sense()
 {
-    unsigned long now = micros();
-    if (last > 0)
+  unsigned long now = micros();
+  if (last > 0)
+  {
+    // If this is not the first pulse work out an interval
+    interval = now - last;
+    // Work out the speed based on a 12mm diameter wheel
+    // distane teavelled is Pi * WHEEL_DIAMETER / 2 - half circumfrance of the wheel
+    // Distance needs to be scaled for 4mm to the foot and 5280 feet in a mile
+    // distance in miles ((Pi * WHEEL_DIAMETER) / (2 * 4))/ 5280
+    // time taken is interval microseconds, convert to hours by dividing by 3.6e9
+    double miles = (PI * WHEEL_DIAMETER) / (2 * 4 * 5280);
+    double hours = interval / 3.6e9;
+    mph = miles / hours;
+    // "Debounce" if sensor triggers too soon
+    if (mph > 0 && mph < 500)
     {
-	// If this is not the first pulse work out an interval
-        interval = now - last;
-	// Work out the speed based on a 12mm diameter wheel
-        mph = (double)(12 * 27186.0576) / (double)interval;
-	// "Debounce" if sensor triggers too soon
-        if (mph > 0 && mph < 200)
-        {
-		if (mph > maxspeed)
-                {
-                  maxspeed = mph;
-                }
-                if (mph >trip_max)
-                {
-                  trip_max = mph;
-                }
-		tripduration = millis() - tripstart;
-        }
-        else
-        {
-		mph = 0;
-        }
-        if (newtrip)
-        {
-		// We just started to move ina new trip
-		tripstart = millis();
-		tripsamples = 0;
-		trip_distance = 0;
-		trip_aver = 0;
-                trip_max = 0;
-        }
+      if (mph > maxspeed)
+      {
+        maxspeed = mph;
+      }
+      if (mph > trip_max)
+      {
+        trip_max = mph;
+      }
+      tripduration = millis() - tripstart;
     }
-    last = now;
-    count = count + 1;
-    distance = distance + 4.712;
-    trip_distance += 4.712;
+    else
+    {
+      mph = 0;
+    }
+    if (newtrip)
+    {
+      // We just started to move ina new trip
+      tripstart = millis();
+      tripsamples = 0;
+      trip_distance = 0;
+      trip_aver = 0;
+      trip_max = 0;
+    }
+  }
+  last = now;
+  count = count + 1;
+  distance = distance + 4.712;
+  trip_distance += 4.712;
 }
 
 
 /**
- * Timer routine called every second to work out average speed of the vehicle
- * Computes an rolling average whenever the vehicle is moving for both
- * the overall average and the average during this trip.
- */
+   Timer routine called every second to work out average speed of the vehicle
+   Computes an rolling average whenever the vehicle is moving for both
+   the overall average and the average during this trip.
+*/
 void aver()
 {
-    if (mph > 0)
-    {
-        avg = ((avg * avs) + mph) / (avs + 1);
-        avs = avs + 1;
-        trip_aver = ((trip_aver * tripsamples) + mph) / (tripsamples + 1);
-        tripsamples = tripsamples + 1;
-    }
+  if (mph > 0)
+  {
+    avg = ((avg * avs) + mph) / (avs + 1);
+    avs = avs + 1;
+    trip_aver = ((trip_aver * tripsamples) + mph) / (tripsamples + 1);
+    tripsamples = tripsamples + 1;
+  }
 }
 
 String style = "<style>\n"
-  "table, td {  border: 1px solid black; border-collapse: collapse; }\n"
-  "th { font-size: 1.1em; text-align: left; padding: 5px; \n"
-  "     background-color: #A7C942; color: #ffffff; text-align: center; \n"
-  "border: 1px solid black; border-collapse: collapse; vertical-align: middle; }"
-  "</style>";
+               "table, td {  border: 1px solid black; border-collapse: collapse; }\n"
+               "th { font-size: 1.1em; text-align: left; padding: 5px; \n"
+               "     background-color: #A7C942; color: #ffffff; text-align: center; \n"
+               "border: 1px solid black; border-collapse: collapse; vertical-align: middle; }"
+               "</style>";
 
 
 /**
- * Send the CSS styles used on the page
- */
+   Send the CSS styles used on the page
+*/
 String http_style()
 {
   return style;
 }
 
 /*
- * Some static HTTP content
- */
+   Some static HTTP content
+*/
 static char homelink[] = "<P><A HREF=\"/\">Home</A>";
 static char prelude[] = "</BODY></HTML>";
 
@@ -248,10 +260,10 @@ static char htmltype[] = "text/html";
 extern void handle_with_refresh(int);
 
 /**
- * Handle a / URL request
- *
- * Print table for speeds and distances
- */
+   Handle a / URL request
+
+   Print table for speeds and distances
+*/
 void handle_root()
 {
   handle_with_refresh(refresh);
@@ -265,7 +277,7 @@ void handle_norefresh()
 void handle_with_refresh(int val)
 {
   String buffer = "";
-  
+
   buffer += "<html><head>";
   buffer += http_style();
   buffer += "<TITLE>Dynamometer Van</TITLE>";
@@ -310,9 +322,9 @@ void handle_with_refresh(int val)
 }
 
 /**
- * Handle /status URL
- * Return information on the status of the network
- */
+   Handle /status URL
+   Return information on the status of the network
+*/
 void handle_status()
 {
   String buffer = "<html>";
@@ -368,9 +380,9 @@ void handle_status()
 }
 
 /**
- * Handle /help URL
- * Return information on the status of the network
- */
+   Handle /help URL
+   Return information on the status of the network
+*/
 void handle_help()
 {
   String buffer = "";
@@ -399,8 +411,8 @@ void handle_help()
 }
 
 /*
- * Handle a reset URL request
- */
+   Handle a reset URL request
+*/
 void handle_reset()
 {
   maxspeed = 0;
@@ -412,8 +424,8 @@ void handle_reset()
 }
 
 /*
- * Handle a request to set as access point only
- */
+   Handle a request to set as access point only
+*/
 void handle_ap()
 {
   WiFi.mode(WIFI_AP);
@@ -421,8 +433,8 @@ void handle_ap()
 }
 
 /*
- * Handle a request to be in both station and access point mode
- */
+   Handle a request to be in both station and access point mode
+*/
 void handle_both()
 {
   WiFi.mode(WIFI_AP_STA);
@@ -430,8 +442,8 @@ void handle_both()
 }
 
 /*
- * Handle a request for speed and distance as JSON document
- */
+   Handle a request for speed and distance as JSON document
+*/
 void handle_json()
 {
   String data = "{ \"data\" : [ \"speed\" : \"";
@@ -441,12 +453,12 @@ void handle_json()
 }
 
 /**
- * Handle the /connect=... URL
- */
+   Handle the /connect=... URL
+*/
 void handle_connect()
 {
-String buffer = "";
-char  ssidbuf[40], pwdbuf[40];
+  String buffer = "";
+  char  ssidbuf[40], pwdbuf[40];
 
   String ssid = server.arg("SSID");
   String pwd = server.arg("PWD");
@@ -488,12 +500,12 @@ char  ssidbuf[40], pwdbuf[40];
 }
 
 /**
- * Handle the /config=... URL
- */
+   Handle the /config=... URL
+*/
 void handle_config()
 {
-String buffer = "";
-char  buf[40];
+  String buffer = "";
+  char  buf[40];
 
   String refreshstr = server.arg("REFRESH");
   String triplenstr = server.arg("TRIPLEN");
@@ -503,13 +515,13 @@ char  buf[40];
     refreshstr.toCharArray(buf, 40);
     refresh = atoi(buf);
   }
-  
+
   if (triplenstr.length() > 0)
   {
     triplenstr.toCharArray(buf, 40);
     triplength = atoi(buf);
   }
-  
+
   if (refreshstr.length() == 0 && triplenstr.length() == 0)
   {
     buffer = "<TITLE>Error</TITLE>";
@@ -525,8 +537,8 @@ char  buf[40];
   else
   {
     /*
-     * Update the EEPROM data
-     */
+       Update the EEPROM data
+    */
     EEPROM.write(0, DMAGIC1);
     EEPROM.write(1, DMAGIC2);
     EEPROM.write(3, refresh);
@@ -539,70 +551,70 @@ char  buf[40];
 }
 
 /*
- * Handle a request for the configuration form
- */
+   Handle a request for the configuration form
+*/
 void handle_configure()
 {
   String buffer = "";
-  
-    buffer = "<TITLE>Configuration</TITLE>";
-    buffer += "</head>";
-    buffer += "<body>";
-    buffer += "<H1>Configuration</H1>";
-    buffer += "<P>";
-    buffer += "<form action=\"config\" method=\"GET\">";
-    buffer += "<TABLE><TR><TH>Parameter</TH><TH>Value</TH><TR>";
-    buffer += "<TR><TD>Refresh interval</TD><TD><INPUT LENGTH=3 NAME=\"REFRESH\" VALUE=\"";
-    buffer.concat(String(refresh));
-    buffer += "\"/> Seconds</TD></TR>";
-    buffer += "<TR><TD>Trip stationary limit</TD><TD><INPUT LENGTH=3 NAME=\"TRIPLEN\" VALUE=\"";
-    buffer.concat(String(triplength));
-    buffer += "\"/> Seconds</TD></TR>";
-    buffer += "</TABLE>";
-    buffer += "<BR/><INPUT TYPE=\"Submit\"/>";
-    buffer += "</FORM>";
-    buffer += homelink;
-    buffer += prelude;
-    server.send(200, htmltype, buffer);
+
+  buffer = "<TITLE>Configuration</TITLE>";
+  buffer += "</head>";
+  buffer += "<body>";
+  buffer += "<H1>Configuration</H1>";
+  buffer += "<P>";
+  buffer += "<form action=\"config\" method=\"GET\">";
+  buffer += "<TABLE><TR><TH>Parameter</TH><TH>Value</TH><TR>";
+  buffer += "<TR><TD>Refresh interval</TD><TD><INPUT LENGTH=3 NAME=\"REFRESH\" VALUE=\"";
+  buffer.concat(String(refresh));
+  buffer += "\"/> Seconds</TD></TR>";
+  buffer += "<TR><TD>Trip stationary limit</TD><TD><INPUT LENGTH=3 NAME=\"TRIPLEN\" VALUE=\"";
+  buffer.concat(String(triplength));
+  buffer += "\"/> Seconds</TD></TR>";
+  buffer += "</TABLE>";
+  buffer += "<BR/><INPUT TYPE=\"Submit\"/>";
+  buffer += "</FORM>";
+  buffer += homelink;
+  buffer += prelude;
+  server.send(200, htmltype, buffer);
 }
 
 /*
- * Report the encryption type as a printable string
- */
+   Report the encryption type as a printable string
+*/
 String encryption_type(int type)
 {
   switch (type)
   {
-  case 2: return "TKIP";
-  case 4: return "CCMP";
-  case 5: return "WEP";
-  case 7: return "None";
-  case 8: return "Auto";
+    case 2: return "TKIP";
+    case 4: return "CCMP";
+    case 5: return "WEP";
+    case 7: return "None";
+    case 8: return "Auto";
   }
   return "???";
 }
 
 /*
- * WiFi Setup form
- */
+   WiFi Setup form
+*/
 void handle_wifi_connect()
 {
   String buffer = "";
   int i, n_networks;
- 
- n_networks = WiFi.scanNetworks();
- 
- buffer = "<TITLE>WiFI Connection</TITLE>";
- buffer += "</head>";
- buffer += "<body>";
- buffer += "<H1>Setup</H1>";
- buffer += "<P>";
- if (n_networks == 0)
- {
-   buffer += "No WiFi networks found.";
- }
- else
- {
+
+  n_networks = WiFi.scanNetworks();
+
+  buffer = "<TITLE>WiFI Connection</TITLE>";
+  buffer += "</head>";
+  buffer += "<body>";
+  buffer += "<H1>Setup</H1>";
+  buffer += "<P>";
+  if (n_networks == 0)
+  {
+    buffer += "No WiFi networks found.";
+  }
+  else
+  {
     buffer += "<form action=\"connect\" method=\"GET\">";
     buffer += "Network: <select name=\"SSID\">";
     for (i = 0; i < n_networks; i++)
@@ -621,8 +633,8 @@ void handle_wifi_connect()
     buffer += "<P>Password: <INPUT LENGTH=3 NAME=\"PWD\" VALUE=\"\">";
     buffer += "<BR/><INPUT TYPE=\"Submit\"/>";
     buffer += "</FORM>";
- }
- buffer += homelink;
- buffer += prelude;
- server.send(200, htmltype, buffer);
+  }
+  buffer += homelink;
+  buffer += prelude;
+  server.send(200, htmltype, buffer);
 }
